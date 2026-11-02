@@ -61,7 +61,9 @@ function rank(query) {
   const terms = new Map();
   for (const token of query.toLowerCase().match(/[a-z0-9]+/g) || []) {
     if (stopwords.has(token)) continue;
-    const term = vocabulary.get(stemmer.stem(token));
+    // PyStemmer and the vendored JS Snowball release differ on 55 observed
+    // word forms. Explicit compatibility stems preserve the corpus analyzer.
+    const term = vocabulary.get(metadata.stem_overrides?.[token] ?? stemmer.stem(token));
     if (term !== undefined) terms.set(term,(terms.get(term)||0)+1);
   }
   const scores = new Float32Array(manifest.passages);

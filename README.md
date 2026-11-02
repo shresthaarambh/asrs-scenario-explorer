@@ -1,6 +1,6 @@
 # ASRS Scenario Explorer — free browser edition
 
-Live website: https://shresthaarambh.github.io/asrs-scenario-explorer/
+Live website: https://aarambhshrestha.com/asrs-scenario-explorer/
 
 This independent repository contains **only the website and its public search
 data**. It does not push changes into the original class project repository.
@@ -37,7 +37,7 @@ http://localhost:8080. The data and index are already generated. GitHub Pages
 publishes the `main` branch, root folder. Push website edits to `main` to update.
 The website uses relative asset URLs so it also works under its project path.
 Run `node tests/search.test.cjs` with Node 22 or later to compare the browser
-worker with nine saved Python reference rankings, scores, passages, counts,
+worker with eleven saved Python reference rankings, scores, passages, counts,
 and distributions, and to check pagination and high-score filtering offline.
 
 The full project can regenerate this site with `python scripts/build_pages.py`.
@@ -58,3 +58,5 @@ by Lucas Markes. Geist font licensing is included in FONT-LICENSE.txt.
 The vendored snowball-stemmers 0.6.0 package is by Oleg Mazko
 (https://github.com/mazko/jssnowball); see vendor/SNOWBALL-LICENSE.txt.
 Its npm metadata declares ISC; the upstream repository's BSD license is retained.
+`stem-overrides.json` preserves PyStemmer's newer stemming for 55 word forms
+found by comparing both stemmers across all 54,847 observed corpus word forms.
