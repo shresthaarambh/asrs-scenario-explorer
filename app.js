@@ -54,9 +54,12 @@ setTheme(document.documentElement.dataset.theme || 'light');
 $('#theme-toggle').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 
 function graphSkinUrl(frame) {
-  const base = frame?.dataset.src || './graph-app/index.html';
+  const local = frame?.dataset.src || './graph-app/index.html';
+  const deployed = !['localhost','127.0.0.1','0.0.0.0'].includes(location.hostname);
+  const base = deployed ? 'https://triaggent-consulting.vercel.app/portfolio/asrs-precedent-graph/index.html' : local;
   return `${base}?skin=search-${document.documentElement.dataset.theme || 'light'}`;
 }
+function graphMessageOrigin(frame) { return new URL(frame?.src || './graph-app/index.html', location.href).origin; }
 function skinGraphFrame(frame = $('#graph-frame')) {
   const doc = frame?.contentDocument;
   if (!doc) return;
@@ -304,12 +307,12 @@ function openGraphFor(row, query, card) {
     const note=node('p','graph-context-note','Interactive map centered on this report. Explore nearby scenarios, shared factors, Focus, and Analytics without leaving the search result.');
     const frame=node('iframe','graph-inline-frame'); frame.title=`Interactive graph context for ASRS ${row.id}`; frame.dataset.src='./graph-app/index.html';
     context.append(summary,note,frame); card.append(context);
-    frame.addEventListener('load',()=>{skinGraphFrame(frame); frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},location.origin);},{once:true});
+    frame.addEventListener('load',()=>{skinGraphFrame(frame); frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},graphMessageOrigin(frame));},{once:true});
     frame.src=graphSkinUrl(frame); frame.dataset.loaded='true';
   } else {
     const frame=context.querySelector('iframe');
     context.querySelector('summary').textContent=`Graph context · ASRS ${row.id}`;
-    if(frame) frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},location.origin);
+    if(frame) frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},graphMessageOrigin(frame));
   }
   context.open=true;
   context.scrollIntoView({block:'start',behavior:motion()});
