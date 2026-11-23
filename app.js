@@ -308,7 +308,7 @@ function openGraphFor(row, query, card) {
     const frame=node('iframe','graph-inline-frame'); frame.title=`Interactive graph context for ASRS ${row.id}`; frame.dataset.src='./graph-app/index.html';
     context.append(summary,note,frame); card.append(context);
     frame.addEventListener('load',()=>{skinGraphFrame(frame); frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},graphMessageOrigin(frame));},{once:true});
-    frame.src=graphSkinUrl(frame); frame.dataset.loaded='true';
+    frame.src=`${graphSkinUrl(frame)}#focus=${encodeURIComponent(`ASRS:${row.id}`)}`; frame.dataset.loaded='true';
   } else {
     const frame=context.querySelector('iframe');
     context.querySelector('summary').textContent=`Graph context · ASRS ${row.id}`;
