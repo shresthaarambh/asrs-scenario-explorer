@@ -7,8 +7,8 @@ function node(tag, cls, text) {
   if (text !== undefined) el.textContent = text;
   return el;
 }
-const labels = {bm25:'Keyword · BM25', minilm:'Meaning · MiniLM', 'hybrid-bm25-minilm':'Combined · BM25 + MiniLM'};
-const help = {bm25:'Keyword search ranks shared words, including aviation terminology.', minilm:'MiniLM compares frozen text embeddings using cosine similarity.', 'hybrid-bm25-minilm':'Reciprocal rank fusion combines keyword and MiniLM rankings. The passage is from the first contributing component, usually BM25.'};
+const labels = {bm25:'Keyword · BM25', minilm:'Frozen semantic · EmbeddingGemma 2', 'hybrid-bm25-minilm':'Hybrid · BM25 + EmbeddingGemma 2', 'qwen3-8b-frozen':'Research · Qwen3-Embedding 8B frozen', 'hybrid-bm25-qwen3-8b':'Research · BM25 + Qwen3 8B fused', 'qwen3-8b-adapted':'Research · Qwen3 8B adapted to aviation', 'raf-reranker':'Research · Qwen3-Reranker 4B + first stage', 'scrqa-pipeline':'Research · SCRQA combined pipeline', 'graph-assisted':'Graph-assisted retrieval'};
+const help = {bm25:'Keyword search ranks shared words, including aviation terminology.', minilm:'EmbeddingGemma 2 compares frozen browser text embeddings using cosine similarity against the verified ASRS vector index.', 'hybrid-bm25-minilm':'Reciprocal rank fusion combines BM25 and frozen EmbeddingGemma 2 rankings. Both indexes are verified locally before use.', 'qwen3-8b-frozen':'Paper benchmark: a large frozen Qwen3 encoder. The matching browser model and full-corpus vector index are not packaged locally.', 'hybrid-bm25-qwen3-8b':'Paper benchmark: reciprocal-rank fusion of BM25 and frozen Qwen3-Embedding 8B. Research result only in this browser edition.', 'qwen3-8b-adapted':'Paper benchmark: Qwen3-Embedding 8B adapted to aviation text. Requires its trained checkpoint and vector index.', 'raf-reranker':'Paper benchmark: Qwen3-Reranker 4B reranks first-stage candidates. It requires a packaged model or server.', 'scrqa-pipeline':'Proposed source-constrained pipeline combining retrieval, graph evidence, reranking, and source-linked questioning.', 'graph-assisted':'Graph-assisted retrieval uses report factors and graph relationships to refine candidates. It needs graph metadata aligned to this corpus.'};
 const fieldGroups = [
   ['Accounts', [['passage','Matching passage'],['synopsis','Analyst summary'],['narrative_1','Reporter account 1'],['narrative_2','Reporter account 2'],['narrative','Combined narrative']]],
   ['What happened', [['anomaly','Event categories'],['primary_problem','Primary problem'],['contributing_factors','Contributing factors'],['human_factors','Human factors'],['comm_breakdown','Communication'],['result','Outcome / response']]],
@@ -45,12 +45,62 @@ function setTheme(theme) {
   const dark = theme === 'dark';
   $('#theme-toggle').setAttribute('aria-pressed', String(dark));
   $('#theme-toggle').setAttribute('aria-label', dark ? 'Switch to light mode' : 'Switch to dark mode');
-  $('#theme-label').textContent = dark ? 'Light mode' : 'Dark mode';
   $('#theme-icon').textContent = dark ? '☼' : '☾';
   try { localStorage.setItem('asrs-theme', theme); } catch {}
+  skinGraphFrame();
+  $$('.graph-inline-frame').forEach(skinGraphFrame);
 }
 setTheme(document.documentElement.dataset.theme || 'light');
 $('#theme-toggle').onclick = () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+
+function graphSkinUrl(frame) {
+  const base = frame?.dataset.src || './graph-app/index.html';
+  return `${base}?skin=search-${document.documentElement.dataset.theme || 'light'}`;
+}
+function skinGraphFrame(frame = $('#graph-frame')) {
+  const doc = frame?.contentDocument;
+  if (!doc) return;
+  const dark = document.documentElement.dataset.theme === 'dark';
+  let style = doc.querySelector('#asrs-search-skin');
+  if (!style) { style = doc.createElement('style'); style.id = 'asrs-search-skin'; doc.head.append(style); }
+  style.textContent = dark ? `
+    :root { color-scheme: dark; --bg:#08090a; --bar:#0d0e10; --panel:rgba(13,14,16,.94); --raised:#121316; --hover:#191b20; --line:#29292d; --line-soft:#1b1d21; --ink:#d0d6e0; --ink-2:#a5aab4; --muted:#858a95; --lit:#f2f4f7; --on-ink:#08090a; --source-blue:#3987e5; --source-orange:#e8ab68; --source-blue-soft:#9dc5eb; --t-human:#3987e5; --t-system:#d95926; --t-weather:#199e70; --t-approach:#c98500; --t-event:#d55181; --t-response:#008300; --t-sequence:#9085e9; --t-phase:#e66767; --t-narrative:#b4bcc5; --t-context:#6b7479; }
+    .topbar,.side,.palette,.mapkey,.tip,.map-guide { box-shadow:none; }
+  ` : `
+    :root { color-scheme: light; --bg:#fff; --bar:#fff; --surface:#fff; --panel:rgba(255,255,255,.96); --raised:#fafafa; --hover:#f4f4f4; --line:#e5e5e5; --line-soft:#f0f0f0; --ink:#232327; --ink-2:#55565b; --muted:#737373; --lit:#232327; --on-ink:#fff; --source-blue:#2675e8; --source-orange:#ef7d1a; --source-blue-soft:#78b2ff; --connection-warm:#d9822b; --t-human:#2563eb; --t-system:#f97316; --t-weather:#16a34a; --t-approach:#d97706; --t-event:#db2777; --t-response:#059669; --t-sequence:#7c3aed; --t-phase:#dc2626; --t-narrative:#475569; --t-context:#64748b; }
+    .topbar,.side,.palette,.mapkey,.tip,.map-guide { box-shadow:0 12px 30px rgb(35 35 39 / .06); }
+  `;
+}
+
+const utilityTabs = node('nav', 'utility-tabs');
+utilityTabs.setAttribute('aria-label', 'Workspace pages');
+const viewButtons = new Map();
+for (const [view, title] of [['search','Search'],['graph','Graph']]) {
+  const button = node('button', 'utility-tab', title); button.type = 'button'; button.dataset.view = view;
+  button.setAttribute('aria-pressed', String(view === 'search')); viewButtons.set(view, button); utilityTabs.append(button);
+}
+const themeToggle = $('#theme-toggle');
+themeToggle.remove();
+$('header').append(utilityTabs, themeToggle);
+function showView(view) {
+  const isSearch = view === 'search';
+  document.querySelector('.shell').hidden = !isSearch;
+  $('#graph-view').hidden = view !== 'graph';
+  document.body.classList.toggle('aux-open', !isSearch);
+  viewButtons.forEach((button, name) => button.setAttribute('aria-pressed', String(name === view)));
+  if (view === 'graph') {
+    const frame = $('#graph-frame');
+    if (frame && !frame.dataset.loaded) {
+      frame.addEventListener('load', skinGraphFrame, {once:true});
+      frame.src = graphSkinUrl(frame); frame.dataset.loaded = 'true';
+    } else skinGraphFrame();
+  }
+  if (view === 'search') window.scrollTo({top: 0, behavior: motion()});
+  else window.scrollTo({top: 0, behavior: motion()});
+}
+viewButtons.forEach((button, view) => button.onclick = () => showView(view));
+$('#presentation-view')?.remove();
+$('#research-view')?.remove();
 
 function activateSearch() {
   document.body.classList.add('exploring'); $('.search-entry').setAttribute('aria-expanded','true');
@@ -58,6 +108,7 @@ function activateSearch() {
 }
 function returnHome() {
   // An explicit Home action resets the search; scrolling never changes it.
+  showView('search');
   searchVersion += 1;
   activeSearch?.abort(); activeSearch = null; busy = false;
   lastData = null; lastRequest = null; bandRatio = .8; strongOnly = false;
@@ -76,7 +127,13 @@ function returnHome() {
   buildSidebar(); $('#nav-search').classList.remove('active');
   syncBusy(); window.scrollTo({top:0, behavior:motion()});
 }
-$('#home-link').onclick = e => { e.preventDefault(); returnHome(); };
+$('#home-link').onclick = e => {
+  e.preventDefault();
+  if (document.body.classList.contains('aux-open')) {
+    showView('search');
+    $('#search').scrollIntoView({block:'start', behavior:motion()});
+  } else returnHome();
+};
 function openSearch(){activateSearch();$('#search').scrollIntoView({block:'start',behavior:motion()});$('#query').focus({preventScroll:true});}
 $('#nav-search').onclick=e=>{e.preventDefault();openSearch();};
 $('.search-entry').setAttribute('aria-expanded','false');
@@ -98,7 +155,10 @@ async function checkStatus() {
     const r=await asrsFetch('status'), s=await r.json(); readyMethods=s.methods;
     $('#status').textContent=s.message+(s.error?' — '+s.error:'');
     $('#count').textContent=s.reports?s.reports.toLocaleString():'Preparing';
-    for(const o of $('#method').options){o.disabled=!readyMethods.includes(o.value);o.textContent=labels[o.value]+(o.disabled?' (loading)':'');}
+    for(const o of $('#method').options){
+      o.disabled=!readyMethods.includes(o.value);
+      o.textContent=labels[o.value]+(o.disabled?(o.value.startsWith('qwen3')||o.value.startsWith('hybrid-bm25-qwen3')||o.value==='raf-reranker'||o.value==='scrqa-pipeline'?' (research benchmark)':' (not available locally)'):'');
+    }
     if(!methodChosen&&readyMethods.includes('hybrid-bm25-minilm')) $('#method').value='hybrid-bm25-minilm';
     $('#method-help').textContent=help[$('#method').value]; syncBusy();
     if(!s.complete&&!s.error)setTimeout(checkStatus,2000);
@@ -209,6 +269,7 @@ function renderResults(data) {
     card.append(meta,title,node('div','small','MATCHING PASSAGE'),node('div','passage',row.passage));
     const feature=node('section','result-feature');feature.dataset.reportId=row.id;card.append(feature);
     const inspector=reportInspector(row);card.append(inspector);button.onclick=()=>{inspector.open=!inspector.open;if(inspector.open)inspector.scrollIntoView({block:'start',behavior:motion()});};
+    const graphAction=node('button','graph-action','Show graph context');graphAction.type='button';graphAction.title='Show this report in the interactive ASRS + NTSB graph';graphAction.onclick=()=>openGraphFor(row,data.query,card);card.append(graphAction);
     const rating=node('div','rating');
     rating.append(node('span','assessment-label','Relevance (manual)'));
     const existing=ratings.find(x=>x.query===data.query&&x.method===data.method&&x.report_id===row.id);
@@ -233,6 +294,25 @@ function renderResults(data) {
     rating.append(source);
     card.append(rating);$('#results').append(card);
   }
+}
+function openGraphFor(row, query, card) {
+  $$('.graph-context').forEach(context => { if (context.parentElement !== card) context.open = false; });
+  let context = card.querySelector('.graph-context');
+  if (!context) {
+    context = node('details','graph-context');
+    const summary=node('summary','',`Graph context · ASRS ${row.id}`);
+    const note=node('p','graph-context-note','Interactive map centered on this report. Explore nearby scenarios, shared factors, Focus, and Analytics without leaving the search result.');
+    const frame=node('iframe','graph-inline-frame'); frame.title=`Interactive graph context for ASRS ${row.id}`; frame.dataset.src='./graph-app/index.html';
+    context.append(summary,note,frame); card.append(context);
+    frame.addEventListener('load',()=>{skinGraphFrame(frame); frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},location.origin);},{once:true});
+    frame.src=graphSkinUrl(frame); frame.dataset.loaded='true';
+  } else {
+    const frame=context.querySelector('iframe');
+    context.querySelector('summary').textContent=`Graph context · ASRS ${row.id}`;
+    if(frame) frame.contentWindow?.postMessage({type:'asrs-search-focus',report_id:String(row.id),query:String(query||'')},location.origin);
+  }
+  context.open=true;
+  context.scrollIntoView({block:'start',behavior:motion()});
 }
 function reportInspector(row) {
   const details=node('details','report-details');details.id='report-'+row.id;details.append(node('summary','',`Inspect report ${row.id} · accounts, categories & context`));

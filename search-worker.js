@@ -1,9 +1,106 @@
 /* Real BM25 over exported float32 passage weights. All scoring stays here. */
 importScripts('./vendor/snowball-stemmers.js');
+importScripts('./semantic-core.js');
 const stemmer = snowballFactory.newStemmer('english');
 const state = {methods:[], reports:0, message:'Downloading browser keyword index…', error:null, complete:false};
 let manifest, metadata, weights, indices, indptr, vocabulary, stopwords;
 const rankingCache = new Map(), reportCache = new Map();
+let semanticManifest, semanticVectors, semanticLengths, semanticExtractor, semanticLoading;
+const semanticQueryCache = new Map();
+
+async function sha256(bytes) {
+  const hash = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function loadSemanticRuntime(assets) {
+  const response = await fetch('./vendor/transformers/transformers.min.js');
+  if (!response.ok) throw Error('The local Transformers.js runtime is missing.');
+  const moduleUrl = URL.createObjectURL(new Blob([await response.arrayBuffer()], {type:'text/javascript'}));
+  try { return await import(moduleUrl); } finally { URL.revokeObjectURL(moduleUrl); }
+}
+
+async function loadSemantic() {
+  if (semanticLoading) return semanticLoading;
+  semanticLoading = (async () => {
+    state.message = 'Preparing frozen semantic search · first use may take a moment…';
+    const manifestResponse = await fetch('./data/semantic/manifest.json', {cache:'no-cache'});
+    if (!manifestResponse.ok) throw Error('Semantic index is missing.');
+    semanticManifest = await manifestResponse.json();
+    const assetsResponse = await fetch('./vendor/semantic-assets.json', {cache:'no-cache'});
+    if (!assetsResponse.ok) throw Error('Semantic model assets are missing.');
+    const assets = await assetsResponse.json();
+    SemanticCore.validateManifest(semanticManifest, assets, metadata.doc_ids.length,
+      await sha256(new TextEncoder().encode(metadata.doc_ids.join('\n'))));
+    const modelPromise = (async () => {
+      const modelRoot = new URL(`vendor/models/${semanticManifest.model}/`, self.location.href);
+      const exportResponse = await fetch(new URL('export.json', modelRoot));
+      if (!exportResponse.ok || await sha256(await exportResponse.arrayBuffer()) !== semanticManifest.model_export_sha256) {
+        throw Error('Semantic model provenance does not match the index.');
+      }
+      const [runtime, {loadAviationEncoder}] = await Promise.all([
+        loadSemanticRuntime(assets),
+        import(new URL('./semantic-encoder.mjs', self.location.href).href),
+      ]);
+      runtime.env.backends.onnx.wasm.wasmPaths = new URL('./vendor/transformers/', self.location.href).href;
+      runtime.env.backends.onnx.wasm.numThreads = 1;
+      return loadAviationEncoder(runtime, modelRoot.href, 'wasm');
+    })();
+    const indexPromise = (async () => {
+      semanticVectors = new Int8Array(semanticManifest.reports * semanticManifest.dimensions);
+      let next = 0;
+      for (const shard of semanticManifest.shards) {
+        if (shard.start !== next) throw Error('Semantic index has a shard gap.');
+        const response = await fetch(`./data/semantic/${shard.file}`);
+        if (!response.ok) throw Error('Could not download semantic vectors.');
+        const bytes = await response.arrayBuffer();
+        if (bytes.byteLength !== shard.rows * semanticManifest.dimensions || await sha256(bytes) !== shard.sha256) {
+          throw Error('Semantic vector verification failed.');
+        }
+        semanticVectors.set(new Int8Array(bytes), shard.start * semanticManifest.dimensions);
+        next += shard.rows;
+      }
+      if (next !== semanticManifest.reports) throw Error('Semantic index is incomplete.');
+      semanticLengths = SemanticCore.norms(semanticVectors, semanticManifest.dimensions);
+    })();
+    [semanticExtractor] = await Promise.all([modelPromise, indexPromise]);
+    state.message = 'Browser search ready · BM25, frozen semantic, and hybrid retrieval available.';
+  })().catch(error => { semanticLoading = null; throw error; });
+  return semanticLoading;
+}
+
+async function semanticRank(query) {
+  await loadSemantic();
+  if (!semanticQueryCache.has(query)) {
+    const embedding = await semanticExtractor(query);
+    semanticQueryCache.set(query, embedding);
+    if (semanticQueryCache.size > 30) semanticQueryCache.delete(semanticQueryCache.keys().next().value);
+  }
+  const embedding = semanticQueryCache.get(query);
+  const started = performance.now();
+  const hits = SemanticCore.rank(semanticVectors, semanticLengths, embedding, null, 100)
+    .map(([doc, score], index) => ({doc, score, best: metadata.doc_starts[doc], semanticRank: index + 1}));
+  return {ranking:hits, seconds:(performance.now() - started) / 1000, cached:false};
+}
+
+async function hybridRank(query) {
+  const lexical = rank(query);
+  const semantic = await semanticRank(query);
+  const fused = new Map();
+  const add = (hit, rank, method) => {
+    const item = fused.get(hit.doc) || {doc:hit.doc, score:0, best:hit.best, components:[]};
+    item.score += 1 / (60 + rank);
+    item.components.push({method, rank, score:hit.score});
+    if (method === 'bm25' && hit.score > 0) item.best = hit.best;
+    fused.set(hit.doc, item);
+  };
+  lexical.ranking.slice(0, 100).forEach((hit, i) => add(hit, i + 1, 'bm25'));
+  semantic.ranking.forEach((hit, i) => add(hit, i + 1, 'minilm'));
+  const ranking = [...fused.values()].sort((a,b) => b.score - a.score || a.doc - b.doc);
+  return {ranking, seconds:lexical.seconds + semantic.seconds, cached:false, fusionDepth:100,
+    componentOverlap: ranking.filter(hit => hit.components.length > 1).length,
+    components:[{method:'bm25',seconds:lexical.seconds},{method:'minilm',seconds:semantic.seconds}]};
+}
 
 async function gzipFile(name) {
   const info = manifest.files[name];
@@ -45,8 +142,8 @@ const initialization = (async () => {
     if (weights.length !== indices.length || indptr[indptr.length-1] !== weights.length || metadata.doc_ids.length !== manifest.reports) {
       throw Error('The search index is inconsistent. Please reload.');
     }
-    state.methods = ['bm25']; state.complete = true;
-    state.message = 'Browser keyword search ready · MiniLM and hybrid are available in the Python app.';
+    state.methods = ['bm25','minilm','hybrid-bm25-minilm']; state.complete = true;
+    state.message = 'Browser keyword search ready · frozen semantic and hybrid load on first use.';
   } catch (error) {
     state.error = error.message; state.message = 'Browser search unavailable'; state.complete = true;
   }
@@ -156,19 +253,20 @@ async function search(body) {
   const started=performance.now();
   let {query,method='bm25',limit=10,offset=0,band_ratio:ratio=.8,strong_only:strongOnly=false}=body;
   if(typeof query!=='string'||!query.trim()||query.length>2000)throw Error('Enter a scenario between 1 and 2,000 characters.');
-  if(method!=='bm25')throw Error('This free website supports BM25 keyword search. MiniLM and hybrid require the Python app.');
+  if(!['bm25','minilm','hybrid-bm25-minilm'].includes(method))throw Error('This browser edition supports BM25, frozen semantic, and hybrid retrieval.');
   if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('Result count must be between 1 and 100.');
   if(!Number.isInteger(offset)||offset<0||offset>manifest.reports)throw Error('Invalid page offset.');
   if(typeof ratio!=='number'||!Number.isFinite(ratio)||ratio<=0||ratio>1)throw Error('Invalid high-score band.');
   if(typeof strongOnly!=='boolean')throw Error('Invalid band selection.');
   query=query.trim();
-  const ranked=rank(query),d=distribution(ranked.ranking,ratio),available=strongOnly?d.band_count:ranked.ranking.length;
+  const ranked=method==='bm25' ? rank(query) : method==='minilm' ? await semanticRank(query) : await hybridRank(query);
+  const d=distribution(ranked.ranking,ratio),available=strongOnly?d.band_count:ranked.ranking.length;
   offset=Math.min(offset,Math.max(0,Math.floor((available-1)/limit)*limit));
   const chosen=ranked.ranking.slice(offset,Math.min(offset+limit,available));
   const rows=await Promise.all(chosen.map(async (hit,i)=>{
     const source=await record(hit.doc),{_passages,...value}=source;
-    return {rank:offset+i+1,id:metadata.doc_ids[hit.doc],score:hit.score,relative_score:hit.score/d.best,
-      high_score:offset+i<d.band_count,components:[],synopsis:value.synopsis,record:value,
+    return {rank:offset+i+1,id:metadata.doc_ids[hit.doc],score:hit.score,relative_score:d.best ? hit.score/d.best : 0,
+      high_score:offset+i<d.band_count,components:hit.components || [],synopsis:value.synopsis,record:value,
       passage:_passages[hit.best-metadata.doc_starts[hit.doc]],narrative:value.narrative};
   }));
   const categories={};for(const row of rows){const key=row.record.primary_problem||'Not recorded';categories[key]=(categories[key]||0)+1;}
@@ -180,7 +278,7 @@ async function search(body) {
       positive_score_candidates:ranked.ranking.length,available,results_shown:rows.length,requested_limit:limit,offset,
       has_next:offset+rows.length<available,has_previous:offset>0,band_ratio:ratio,strong_only:strongOnly,
       high_score_total:d.band_count,high_score_shown:highShown,high_score_not_shown:d.band_count-highShown,
-      fusion_depth:null,component_overlap:null,components:[],distribution:d,cached:ranked.cached,
+      fusion_depth:ranked.fusionDepth || null,component_overlap:ranked.componentOverlap || null,components:ranked.components || [],distribution:d,cached:ranked.cached,
       ranking_seconds:ranked.seconds,query_words:query.split(/\s+/).length,
       distinct_incident_groups_shown:new Set(rows.map(r=>r.record.group_id)).size,
       primary_problems_shown:categories,relevance_probability_available:false}};

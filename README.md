@@ -21,10 +21,22 @@ is required. Opening index.html directly with file:// does not work.
 - Manual relevance assessments and JSON export; saved only in this browser.
 - Day/night mode, homepage flight-cycle animation, and selectable stage artwork.
 
-**MiniLM and hybrid search are not available in this free static edition.** They
-remain available in the original Python app. No similarity probabilities or
-automatic relevance judgments are invented. Browser timings include fetching
-the report batches on a first request; cached searches can be faster.
+Frozen semantic and hybrid retrieval are now available in the local static
+edition. They reuse the graph site's pinned aviation EmbeddingGemma 2 browser
+model and a verified 47,723-report ASRS vector index. The semantic vectors are
+derived from the graph site's original-ASRS block and reordered to this site's
+report catalogue before use. The browser loads the model and vectors lazily on
+the first semantic query; no Python process or CIS 634 benchmark run is needed
+at query time. No similarity probabilities or automatic relevance judgments are
+invented. Browser timings include fetching the report batches and semantic assets
+on first use; cached searches can be faster.
+
+The method selector also lists the paper's Qwen3-Embedding 8B frozen/adapted,
+Qwen3 fusion, reranker, and proposed SCRQA pipeline as research benchmarks.
+Those entries are intentionally disabled in this browser edition because their
+matching checkpoints and full-corpus indexes are not packaged here. The site
+has two workspace tabs: Search and Graph. Graph opens the companion explorer
+checkout locally and does not copy the graph corpus.
 
 Flight-stage suggestions use scenario wording and top-report phase labels. They
 select illustrations; they are not a validated incident classifier. Scores are
@@ -33,7 +45,8 @@ ranking values, not probabilities that reports describe the same incident.
 ## Run or update
 
 Run `python3 -m http.server 8080` from this repository and open
-http://localhost:8080. The data and index are already generated. GitHub Pages
+http://localhost:8080. The data, lexical index, and semantic index are already
+generated. GitHub Pages
 publishes the `main` branch, root folder. Push website edits to `main` to update.
 The website uses relative asset URLs so it also works under its project path.
 Run `node tests/search.test.cjs` with Node 22 or later to compare the browser

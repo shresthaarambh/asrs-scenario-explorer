@@ -48,7 +48,7 @@ const {webcrypto} = require('node:crypto');
   const band=(await call('search',{query,limit:100,band_ratio:.99,strong_only:true})).value;
   assert(band.results.every(r=>r.high_score&&r.relative_score>=.99));
   assert.equal(band.stats.available,band.stats.high_score_total);
-  for(const payload of [{query,method:'minilm'},{query,limit:0},{query,offset:-1},{query,band_ratio:2},{query:' '},{query,strong_only:'true'}]) {
+  for(const payload of [{query,limit:0},{query,offset:-1},{query,band_ratio:2},{query:' '},{query,strong_only:'true'}]) {
     assert((await call('search',payload)).error);
   }
   console.log('Pagination, high-score filtering, and input validation passed.');
